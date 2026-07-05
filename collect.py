@@ -52,7 +52,8 @@ KEYWORDS = [
 TARGET_COUNT = 10          # 하루에 찾을 서로 다른 블로그 수
 WITHIN_DAYS = 31           # 이 일수 이내에 발행된 글만 (발행일 확인된 경우)
 ONE_PER_BLOG = True        # 같은 블로그(서브도메인)는 하루 1개까지만
-MIN_DELAY, MAX_DELAY = 1.5, 4.0   # 요청 사이 예의상 대기(초)
+MIN_DELAY, MAX_DELAY = 0.5, 1.3   # 요청 사이 예의상 대기(초) — 클라우드 속도 위해 단축
+MAX_SEARCH_SECONDS = 150          # 이 시간 넘으면 모은 만큼만 반환(500 에러 방지)
 EXCERPT_CHARS = 1800       # 리포트에 담을 본문 길이
 
 # ── 광고/제휴글 자동 제외 ──────────────────────
@@ -219,7 +220,7 @@ def detect_ad(title, body_text, soup):
 
 
 def fetch_post(url):
-    resp = requests.get(url, headers=HEADERS, timeout=20)
+    resp = requests.get(url, headers=HEADERS, timeout=10)
     resp.encoding = resp.apparent_encoding or "utf-8"
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -286,6 +287,7 @@ def collect_posts(keywords, target, exclude_urls=None, log=None):
     seen_hosts = set()
     processed = set()   # 이번 수집에서 이미 확인한 URL — 재요청 방지
     cutoff = datetime.date.today() - datetime.timedelta(days=WITHIN_DAYS)
+    deadline = time.monotonic() + MAX_SEARCH_SECONDS  # 시간 초과 시 있는 만큼만 반환
 
     keyword_results = {kw: search(kw) for kw in keywords}
     for kw in keywords:
@@ -295,8 +297,13 @@ def collect_posts(keywords, target, exclude_urls=None, log=None):
     round_idx = 0
     exhausted = False
     while len(collected) < target and not exhausted:
+        if time.monotonic() > deadline:
+            log("[시간 초과] 지금까지 모은 결과만 반환")
+            break
         exhausted = True
         for kw in keywords:
+            if time.monotonic() > deadline:
+                break
             results = keyword_results[kw]
             if round_idx >= len(results):
                 continue
