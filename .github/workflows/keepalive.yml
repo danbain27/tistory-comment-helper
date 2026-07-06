@@ -1,0 +1,18 @@
+name: keep-alive
+
+# Render 무료 서버가 잠들지 않도록 10분마다 사이트에 접속(핑)한다.
+# → 로딩창(콜드스타트) 사라지고, "매일 새 글 모드" 기록도 유지돼 같은 글 반복이 줄어든다.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # 10분마다
+  workflow_dispatch:           # 수동 실행 버튼(테스트용)
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping site to keep it awake
+        run: |
+          echo "Pinging tistory-helper..."
+          curl -sS -m 90 -o /dev/null -w "status=%{http_code}\n" https://tistory-helper.onrender.com/ || echo "ping failed (ok, will retry next time)"
