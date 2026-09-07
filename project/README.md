@@ -14,59 +14,99 @@ Monte Carlo** 순으로 검증하는 연구 파이프라인입니다.
 ```bash
 pip install -r requirements.txt
 
-# Bybit USDT 무기한 15분봉 (+ 펀딩비) 다운로드 -> ./data
-python fetch_data.py --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT BNBUSDT DOGEUSDT ADAUSDT AVAXUSDT \
-                     --interval 15 --days 1095 --funding
+# 상장된 USDT 무기한 전 종목 다운로드 (유동성/상장기간 필터 통과분)
+python fetch_data.py --universe all --days 1095 --workers 4
+
+# 거래대금 상위 100개만
+python fetch_data.py --universe top100 --days 1095
+
+# 특정 종목만
+python fetch_data.py --symbols BTCUSDT ETHUSDT --funding
 ```
 
-이미 CSV가 있다면 `data/<SYMBOL>_15m.csv` 로 두면 됩니다.
-필요 컬럼: `timestamp(ms), open, high, low, close, volume` (초 단위 timestamp, `datetime`
-컬럼도 자동 인식).
+- 기본 필터: 24h 거래대금 ≥ 500만 USDT, 상장 ≥ 365일 (`--min-turnover`, `--min-listed-days`)
+- 이미 받은 CSV가 있으면 **마지막 봉 이후만 이어서** 받습니다 (`--force` 로 전체 재수집)
+- 통과 종목 목록은 `data/universe.csv` 에 저장됩니다
+- 규모 감각: 약 400종목 × 3년 15분봉 ≈ 4,200만 봉 / 디스크 2~3GB / 다운로드 1~3시간
+  (짧게 보려면 `--days 365` 또는 `--universe top100`)
 
 ## 2. 실행
 
 ```bash
-python -m src.run_research --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT BNBUSDT DOGEUSDT ADAUSDT AVAXUSDT \
-    --days 1095 --capital 10000 --leverage 2 \
-    --fee-taker 0.00055 --fee-maker 0.0002 --slippage-bp 2 --funding 0.0001
+# 받아둔 전 종목 스캔 -> 상위 바스켓 심층 연구 -> 유니버스 전체 재검증
+python -m src.run_research --universe local --jobs 8
 
-# 빠른 확인용 (탐색 공간 축소)
-python -m src.run_research --symbols BTCUSDT ETHUSDT --quick
+# 데이터도 그 자리에서 받으며 상장 전 종목 스캔
+python -m src.run_research --universe all --jobs 8
 
-# 데이터가 없는 환경에서 파이프라인만 점검 (합성 데이터, 전략 근거로 사용 불가)
-python -m src.run_research --symbols BTCUSDT ETHUSDT SOLUSDT --days 400 --quick --allow-synthetic
+# 상위 100개만
+python -m src.run_research --universe top100 --jobs 8
+
+# 특정 종목 (기존 방식)
+python -m src.run_research --symbols BTCUSDT ETHUSDT SOLUSDT
+
+# 빠른 확인 / 데이터 없는 환경 점검
+python -m src.run_research --universe local --quick --jobs 8
+python -m src.run_research --universe all --allow-synthetic --synthetic-symbols 14 --quick
 ```
 
-무결성 테스트:
+주요 옵션: `--basket-size 8` (심층 연구 종목 수), `--min-bars 20000` (히스토리 부족 종목 제외),
+`--jobs` (스캔/검증 병렬), `--skip-scan` (스캔 없이 바로 심층 연구).
 
-```bash
-python -m tests.test_engine
+무결성 테스트: `python -m tests.test_engine`
+
+## 3. 파이프라인 구조 (전 종목 스캔)
+
+```
+STEP 0   유니버스 확정        상장 USDT 무기한 전 종목 -> 유동성/상장기간/히스토리 필터
+STEP 0b  스트리밍 스캔         종목당 1개씩 로드 -> 지표/PCA/기준전략 평가 -> 즉시 해제
+                              (train + validation 만 사용, test 는 손대지 않음)
+         └ 유니버스 통합 통계   조건별 forward return 을 전 종목 합산 (표본 수백만 봉)
+         └ PCA loading 안정성  PC 의미가 종목 간 일치하는지 검증
+         └ 바스켓 선정         screen_score = train/val 일관성 가중 상위 N 종목
+STEP 1~12  바스켓 심층 연구    진입조건/PCA필터/ATR그리드/TP·SL 탐색 (validation only)
+STEP 13    walk-forward       fold마다 PCA·파라미터 재적합
+STEP 13b   유니버스 재검증     확정된 설정을 전 종목 test 구간에 적용
+                              (선정에 관여하지 않은 종목 포함 = 진짜 OOS)
+STEP 14~16 MC / 스트레스 / 국면 분석 / 11개 항목 자동 판정
 ```
 
-## 3. 출력물
+**메모리**: 스캔은 종목을 하나씩 처리하고 버리므로 종목 수와 무관하게 일정합니다
+(워커당 ~100MB). 심층 연구 구간만 바스켓(기본 8종목)을 메모리에 올립니다.
+
+**소요 시간(참고)**: 400종목 스캔 `--jobs 8` 기준 5~15분, 심층 연구 5~20분,
+유니버스 재검증 3~10분.
+
+**생존 편향 경고**: Bybit 상장 목록에는 **상장폐지된 코인이 없습니다.** 폭락 후 사라진
+종목이 통계에서 빠지므로 유니버스 전체 수치는 실제보다 좋게 나옵니다. 리포트에도 이
+경고가 함께 출력됩니다.
+
+## 3b. 출력물
 
 ```
 results/
-  data_quality.csv          결측/중복/갭/이상치 점검
-  pca_components.csv        각 PC의 설명력과 top loading 해석
-  pca_loadings_<SYM>.csv    PCA loading 원본
-  feature_analysis.csv      Feature 구간별 forward return (1/4/8/16봉)
-  entry_conditions.csv      개별 조건의 forward-return edge (t값 포함)
-  parameter_test.csv        entry / PCA / grid / TP·SL 탐색 전체 결과
-  parameter_sensitivity.csv 파라미터 값별 점수 분포 (과최적화 진단)
-  filter_stack.csv          A(RSI) -> F(+ADX) 필터 누적 효과 = PCA 기여도 검증
-  backtest_results.csv      최종 전략의 train / validation / test 성과
-  walkforward.csv           fold별 val -> test 성과와 선택된 파라미터
-  walkforward_summary.csv   심볼별 walk-forward OOS 집계
-  monte_carlo.csv           거래 재표본 시뮬레이션 결과
-  cost_stress.csv           수수료 2배 / 슬리피지 / 진입지연 스트레스
-  regime_analysis.csv       시장 국면별 성과
-  trades.csv                OOS 거래 로그 (요구 필드 전부 포함)
-  REPORT.md                 사람이 읽는 최종 리포트 + 결론
-charts/
-  equity.png  drawdown.png  monthly_returns.png  trade_distribution.png
-  pca_analysis.png  pca_scatter.png  parameter_sensitivity.png
-strategy_config.yaml        실봇에 넣을 최종 규칙 + 성과 스냅샷
+  universe.csv               스캔 대상 종목과 거래대금/상장일
+  universe_scan.csv          종목별 스캔 결과 + screen_score (바스켓 선정 근거)
+  pooled_feature_analysis.csv 전 종목 합산 조건별 forward return (t값 포함)
+  pca_loading_stability.csv  PC loading 의 종목 간 평균/표준편차
+  universe_validation.csv    확정 설정을 전 종목 test 구간에 적용한 결과
+  data_quality.csv           결측/중복/갭/이상치 점검
+  pca_components.csv         각 PC의 설명력과 top loading 해석
+  feature_analysis.csv       바스켓 종목별 구간 통계
+  entry_conditions.csv       개별 조건의 forward-return edge
+  parameter_test.csv         entry / PCA / grid / TP·SL 탐색 전체 결과
+  parameter_sensitivity.csv  파라미터 값별 점수 분포 (과최적화 진단)
+  filter_stack.csv           A(RSI) -> F(+ADX) 누적 효과 = PCA 기여도 검증
+  backtest_results.csv       train / validation / test 성과
+  walkforward.csv            fold별 val -> test 성과와 선택된 파라미터
+  walkforward_summary.csv    종목별 walk-forward OOS 집계
+  monte_carlo.csv            거래 재표본 시뮬레이션
+  cost_stress.csv            수수료 2배 / 슬리피지 / 진입지연 스트레스
+  regime_analysis.csv        시장 국면별 성과
+  trades.csv                 OOS 거래 로그
+  REPORT.md                  사람이 읽는 최종 리포트 + 결론
+charts/                      equity, drawdown, monthly, trade dist, PCA, sensitivity
+strategy_config.yaml         실봇에 넣을 최종 규칙 + 성과 스냅샷
 ```
 
 ## 4. 과최적화 방지 장치 (설계상 지켜지는 것)
@@ -92,15 +132,19 @@ strategy_config.yaml        실봇에 넣을 최종 규칙 + 성과 스냅샷
 
 ## 5. 최종 판정 기준
 
-`run_research.py` STEP 16 이 9개 항목을 자동 채점합니다.
+`run_research.py` STEP 16 이 11개 항목을 자동 채점합니다.
 
 1. OOS 수익(심볼 중앙값 > 0) 2. OOS MDD ≤ 25% 3. OOS PF ≥ 1.2 4. OOS 거래 ≥ 100건
 5. 과반 심볼에서 수익 6. walk-forward 과반 fold 수익 7. 청산 0건
 8. 수수료 2배에서도 수익 9. Monte Carlo 자본 -50% 확률 < 5%
+10. **유니버스 과반 심볼 OOS 수익** 11. **유니버스 청산 심볼 0개**
 
-- 8개 이상 → `실전 적용 가능 (소액부터)`
-- 5~7개 → `추가 연구 필요`
-- 4개 이하 → `폐기`
+- 10개 이상 → `실전 적용 가능 (소액부터)`
+- 6~9개 → `추가 연구 필요`
+- 5개 이하 → `폐기`
+
+10·11번이 핵심입니다. 바스켓 8종목에서만 되는 전략은 파라미터를 그 8종목에 맞춘
+것일 뿐이고, 전 종목에서 재현돼야 진짜 엣지입니다.
 
 ## 6. 실거래 봇 연결 시 주의
 
@@ -115,6 +159,8 @@ strategy_config.yaml        실봇에 넣을 최종 규칙 + 성과 스냅샷
 ## 7. 모듈 구조
 
 ```
+src/universe.py      상장 종목 조회 + 유동성/상장기간 필터
+src/scan.py          스트리밍 유니버스 스캔, 통합 통계, 바스켓 선정, 전 종목 재검증
 src/indicators.py    RSI/BB/ATR/EMA/ADX (Wilder), 전부 causal
 src/features.py      11개 Feature + forward return 라벨 + 시간순 분할
 src/pca_model.py     train-only PCA, 부호 고정, 분위수 임계값, loading 해석 리포트

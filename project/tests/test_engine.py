@@ -139,10 +139,42 @@ def test_indicators_are_causal():
     check("indicators computed on a truncated series match the full series", ok)
 
 
+def test_scan_never_sees_the_test_slice():
+    """The universe scan both pools statistics and picks the deep-research basket, so it
+    must be blind to the test window. Corrupt that window and nothing may move."""
+    from src.scan import ScanConfig, scan_symbol
+
+    raw = dataio.make_synthetic_ohlcv(24_000, seed=21)
+    cfg = ScanConfig(min_bars=10_000, allow_synthetic=False)
+    a = scan_symbol("TESTUSDT", cfg, df=raw.copy())
+
+    mutated = raw.copy()
+    cut = int(len(raw) * 0.75)                       # start of the test slice
+    rng = np.random.default_rng(3)
+    # one factor per bar for all four prices, so the bars stay valid OHLC and no row is
+    # dropped by clean() - otherwise the split boundary would move for unrelated reasons
+    f = rng.uniform(0.3, 3.0, len(raw) - cut)
+    for c in ("open", "high", "low", "close"):
+        v = mutated[c].to_numpy().copy()
+        v[cut:] = v[cut:] * f
+        mutated[c] = v
+    v = mutated["volume"].to_numpy().copy()
+    v[cut:] = v[cut:] * rng.uniform(0.1, 5.0, len(v) - cut)
+    mutated["volume"] = v
+    b = scan_symbol("TESTUSDT", cfg, df=mutated)
+
+    keys = ["train_roi", "val_roi", "train_score", "val_score", "screen_score",
+            "pc1_var", "train_trades", "val_trades"]
+    same = all(np.isclose(a["summary"][k], b["summary"][k], equal_nan=True) for k in keys)
+    check("scan scores ignore the test slice", same)
+    check("pooled train statistics ignore the test slice",
+          pd.DataFrame(a["pool"]).round(9).equals(pd.DataFrame(b["pool"]).round(9)))
+
+
 if __name__ == "__main__":
     for fn in (test_entry_is_next_bar_open, test_future_mutation_does_not_change_past,
                test_pca_is_train_only, test_costs_are_charged, test_position_and_grid_limits,
-               test_indicators_are_causal):
+               test_indicators_are_causal, test_scan_never_sees_the_test_slice):
         print(f"\n{fn.__name__}")
         fn()
     print(f"\n{'ALL PASS' if not FAILS else 'FAILED: ' + ', '.join(FAILS)}")

@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from . import charts, data as dataio
+from . import charts, data as dataio, universe as uni
 from .analysis import conditional_edge, full_feature_scan
 from .backtest import ExecConfig
 from .features import add_forward_returns, build_features, time_split
@@ -29,12 +29,12 @@ from .optimization import (entry_candidates, evaluate, evaluate_multi, exit_cand
 from .pca_model import PCAModel
 from .regimes import label_regimes, pca_state_table, regime_table
 from .risk import RiskParams
+from .scan import (ScanConfig, pool_feature_stats, pool_loadings, run_scan,
+                   select_basket, universe_verdict_stats, validate_universe)
 from .signal import filter_stack
 from .walk_forward import WFConfig, oos_summary, run_walk_forward
 
 pd.set_option("display.width", 200)
-DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT",
-                   "DOGEUSDT", "ADAUSDT", "AVAXUSDT"]
 
 
 # ----------------------------------------------------------------------- utils
@@ -54,15 +54,70 @@ def main(a):
     cfg = ExecConfig(initial_capital=a.capital, fee_taker=a.fee_taker, fee_maker=a.fee_maker,
                      slippage_bp=a.slippage_bp, funding_rate_8h=a.funding,
                      use_funding=not a.no_funding, entry_delay_bars=1)
-    symbols = a.symbols or DEFAULT_SYMBOLS
     report: list[str] = []
 
+    # ------------------------------------------------------------------ Step 0
+    hr("STEP 0  universe")
+    all_symbols, ulist, usrc = uni.resolve(a, a.data_dir)
+    print(f"  universe source: {usrc}  ({len(all_symbols)} symbols)")
+    if usrc == "bybit":
+        save(ulist, f"{a.results}/universe.csv")
+        print("  주의: Bybit 상장 목록에는 상장폐지된 코인이 없습니다 (생존 편향). "
+              "유니버스 전체 통계는 실제보다 좋게 나옵니다.")
+        report.append("> **생존 편향 주의**: 현재 상장 중인 코인만 스캔합니다. "
+                      "상장폐지된(대개 폭락한) 코인이 빠져 있으므로 유니버스 통계는 낙관적입니다.")
+    scfg = ScanConfig(data_dir=a.data_dir, interval=a.interval, days=a.days,
+                      min_bars=a.min_bars, n_components=a.n_components,
+                      train_frac=a.train_frac, val_frac=a.val_frac,
+                      allow_synthetic=a.allow_synthetic, exec_cfg=cfg, leverage=a.leverage)
+
+    scan_df = pd.DataFrame()
+    if len(all_symbols) > a.basket_size and not a.skip_scan:
+        hr(f"STEP 0b  streaming scan of {len(all_symbols)} symbols "
+           f"(TRAIN+VALIDATION only, jobs={a.jobs})")
+        scan_df, pool, load = run_scan(all_symbols, scfg, jobs=a.jobs)
+        save(scan_df, f"{a.results}/universe_scan.csv")
+        ok = scan_df[scan_df.status == "ok"] if "status" in scan_df else scan_df
+        bad = scan_df[scan_df.status != "ok"] if "status" in scan_df else pd.DataFrame()
+        print(f"  scanned ok: {len(ok)}   skipped: {len(bad)} "
+              f"({dict(bad['status'].str.slice(0, 12).value_counts()) if len(bad) else {}})")
+        if len(ok):
+            cols = ["symbol", "bars", "train_trades", "train_roi", "val_trades", "val_roi",
+                    "val_pf", "val_mdd", "screen_score"]
+            print("\n  상위 15 (screen_score = train/val 일관성 가중):")
+            print(ok[cols].head(15).round(4).to_string(index=False))
+            print("\n  하위 5:")
+            print(ok[cols].tail(5).round(4).to_string(index=False))
+            report.append(f"### 유니버스 스캔 ({len(ok)}개 심볼, train+val)\n```\n"
+                          + ok[cols].head(15).round(4).to_string(index=False) + "\n```")
+        pooled = pool_feature_stats(pool)
+        save(pooled, f"{a.results}/pooled_feature_analysis.csv")
+        if len(pooled):
+            print("\n  유니버스 통합 조건별 forward return (표본이 심볼 수만큼 커짐):")
+            pc = pooled[["feature", "bucket", "symbols", "n", "h4_mean", "h4_win", "h4_pf", "h4_t"]]
+            print(pc.round(4).to_string(index=False))
+            report.append("### 유니버스 통합 Feature -> 4봉 forward return\n```\n"
+                          + pc.round(4).to_string(index=False) + "\n```")
+        stab = pool_loadings(load)
+        save(stab, f"{a.results}/pca_loading_stability.csv")
+        if len(stab):
+            print("\n  PCA loading 안정성 (심볼 간 평균 +- 표준편차):")
+            print(stab.round(3).to_string(index=False))
+            report.append("### PCA loading 안정성 (심볼 간)\n```\n"
+                          + stab.round(3).to_string(index=False) + "\n```")
+        symbols = select_basket(scan_df, a.basket_size, a.min_bars)
+        print(f"\n  심층 연구 바스켓 ({len(symbols)}): {', '.join(symbols)}")
+        report.append(f"### 심층 연구 바스켓\n{', '.join(symbols)}")
+    else:
+        symbols = all_symbols[:a.basket_size] if len(all_symbols) > a.basket_size else all_symbols
+        print(f"  scan 생략, 바스켓 = {', '.join(symbols)}")
+
     # ---------------------------------------------------------------- Step 1-3
-    hr("STEP 1-3  load / quality check / features")
+    hr("STEP 1-3  load / quality check / features (basket)")
     D, sources, quality = {}, {}, []
-    for i, sym in enumerate(symbols):
+    for sym in symbols:
         df, src = dataio.ensure_dataset(sym, a.data_dir, a.interval, allow_synthetic=a.allow_synthetic,
-                                        days=a.days, seed=i + 1)
+                                        days=a.days, seed=dataio.symbol_seed(sym))
         q = dataio.check_quality(df)
         print(f"  {sym:10s} [{src}] {q.to_text()}")
         quality.append({"symbol": sym, "source": src, **asdict(q)})
@@ -318,6 +373,27 @@ def main(a):
         save(wfs, f"{a.results}/walkforward_summary.csv")
         report.append("### Walk-forward OOS 요약\n```\n" + wfs[c].round(4).to_string(index=False) + "\n```")
 
+    # ----------------------------------------------------------------- Step 13b
+    hr(f"STEP 13b  universe-wide validation of the chosen config "
+       f"({len(all_symbols)} symbols, test slice only)")
+    uval = validate_universe(all_symbols, scfg, ep1, gp1, rp1, jobs=a.jobs, split="test")
+    save(uval, f"{a.results}/universe_validation.csv")
+    ustats = universe_verdict_stats(uval)
+    uok = uval[uval.status == "ok"] if "status" in uval else uval
+    if ustats:
+        print("  " + "  ".join(f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}"
+                               for k, v in ustats.items()))
+        if len(uok):
+            best = uok.sort_values("roi", ascending=False).head(10)
+            worst = uok.sort_values("roi").head(10)
+            c = ["symbol", "trades", "roi", "max_drawdown", "profit_factor", "win_rate", "liquidations"]
+            print("\n  최고 10:"); print(best[c].round(4).to_string(index=False))
+            print("\n  최악 10:"); print(worst[c].round(4).to_string(index=False))
+            report.append("### 유니버스 전체 OOS 검증 (선택에 관여하지 않은 심볼 포함)\n```\n"
+                          + "  ".join(f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}"
+                                      for k, v in ustats.items())
+                          + "\n\n최악 10:\n" + worst[c].round(4).to_string(index=False) + "\n```")
+
     # ------------------------------------------------------------------ Step 14
     hr("STEP 14  Monte Carlo + cost stress (OOS trades)")
     mc_source = wf_trades if len(wf_trades) else pd.concat(
@@ -404,18 +480,22 @@ def main(a):
         "청산 0건": int(final["liquidations"].sum()) == 0,
         "비용 2배에서도 수익": bool((stress[stress.fee_mult == 2.0]["roi"] > 0).mean() > 0.5) if len(stress) else False,
         "MC 50% 손실 확률 < 5%": (float(mc["prob_ruin_50pct_loss"].max()) < 0.05) if len(mc) else False,
+        "유니버스 과반 심볼 OOS 수익": (ustats.get("positive_fraction", 0.0) > 0.5) if ustats else False,
+        "유니버스 청산 심볼 0개": (ustats.get("symbols_with_liquidation", 1) == 0) if ustats else False,
     }
     for k, v in checks.items():
         print(f"  [{'PASS' if v else 'FAIL'}] {k}")
     passed = sum(checks.values())
-    verdict = ("실전 적용 가능 (소액부터)" if passed >= 8 else
-               "추가 연구 필요" if passed >= 5 else "폐기")
+    verdict = ("실전 적용 가능 (소액부터)" if passed >= len(checks) - 1 else
+               "추가 연구 필요" if passed >= len(checks) * 0.55 else "폐기")
     if set(sources.values()) == {"synthetic"}:
         verdict += "  [합성 데이터 실행 - 판정 무효]"
     print(f"\n  통과 {passed}/{len(checks)}  ->  결론: {verdict}")
 
     conf = {
         "meta": {"generated_by": "src/run_research.py", "symbols": symbols,
+                 "universe_source": usrc, "universe_size": len(all_symbols),
+                 "universe_stats_oos": ustats,
                  "interval_minutes": int(a.interval), "data_source": sources,
                  "primary_symbol": primary, "verdict": verdict,
                  "checks_passed": f"{passed}/{len(checks)}"},
@@ -451,7 +531,7 @@ def main(a):
     report.append("### 체크리스트\n" + "\n".join(f"- [{'x' if v else ' '}] {k}" for k, v in checks.items()))
 
     summary = _final_summary(symbols, a, ep1, gp1, rp1, models[primary], final, wfs, mc, stress,
-                             pca_helps, verdict, primary)
+                             pca_helps, verdict, primary, all_symbols, ustats)
     print(summary)
     report.append("### 최종 전략 요약\n```\n" + summary + "\n```")
     with open(f"{a.results}/REPORT.md", "w") as f:
@@ -461,14 +541,15 @@ def main(a):
 
 
 def _final_summary(symbols, a, ep, gp, rp, model, final, wfs, mc, stress, pca_helps,
-                   verdict, primary) -> str:
+                   verdict, primary, all_symbols=None, ustats=None) -> str:
     """The human-readable conclusion (Step 24)."""
     oos = final[final.split == "test(OOS)"]
     val = final[final.split == "validation"]
     L = []
     L.append("최종 전략")
     L.append("")
-    L.append(f"시장:        {', '.join(symbols)}")
+    L.append(f"유니버스:    {len(all_symbols or symbols)}개 심볼 스캔")
+    L.append(f"연구 바스켓: {', '.join(symbols)}")
     L.append(f"Timeframe:   {a.interval}m,  LONG only,  leverage {rp.leverage}x")
     L.append(f"PCA:         {a.n_components} components "
              f"(explained var {model.pca.explained_variance_ratio_.sum():.1%}), "
@@ -487,9 +568,13 @@ def _final_summary(symbols, a, ep, gp, rp, model, final, wfs, mc, stress, pca_he
     L.append(f"Grid:        step {gp.step_atr} ATR -> {offs}")
     L.append(f"Max grid:    {gp.max_entries} entries, size weights '{gp.weights}', "
              f"max notional = equity x {rp.leverage * rp.position_pct:.1f}")
-    L.append(f"TP:          average entry {'+' + str(rp.tp_value * 100) + '%' if rp.tp_mode == 'pct' else '+ ' + str(rp.tp_value) + ' x ATR'}")
-    L.append(f"SL:          {'없음' if rp.sl_mode == 'none' else ('-' + str(rp.sl_value * 100) + '%' if rp.sl_mode == 'pct' else '-' + str(rp.sl_value) + ' x ATR')}"
-             f",  max hold {rp.max_hold_bars} bars ({rp.max_hold_bars * 0.25:.0f}h)")
+    tp_txt = f"+{rp.tp_value * 100:.3g}%" if rp.tp_mode == "pct" else f"+ {rp.tp_value:g} x ATR"
+    sl_txt = ("없음" if rp.sl_mode == "none"
+              else f"-{rp.sl_value * 100:.3g}%" if rp.sl_mode == "pct"
+              else f"-{rp.sl_value:g} x ATR")
+    L.append(f"TP:          average entry {tp_txt}")
+    L.append(f"SL:          {sl_txt},  max hold {rp.max_hold_bars} bars "
+             f"({rp.max_hold_bars * 0.25:.0f}h)")
     L.append("")
     L.append(f"Validation:  ROI {val['roi'].median():+.2%} (중앙값)  MDD {val['max_drawdown'].min():.2%}  "
              f"WinRate {val['win_rate'].mean():.1%}  PF {val['profit_factor'].replace(np.inf, 5).median():.2f}")
@@ -499,6 +584,10 @@ def _final_summary(symbols, a, ep, gp, rp, model, final, wfs, mc, stress, pca_he
         L.append(f"Walk-forward: fold {int(wfs['folds_profitable'].sum())}/{int(wfs['folds'].sum())} 수익, "
                  f"OOS ROI 중앙값 {wfs['roi'].median():+.2%}, MDD {wfs['max_drawdown'].min():.2%}, "
                  f"val-test 상관 {wfs['val_test_corr'].mean():.2f}")
+    if ustats:
+        L.append(f"유니버스 OOS: {ustats['symbols_tested']}개 심볼, 수익 심볼 비율 "
+                 f"{ustats['positive_fraction']:.1%}, ROI 중앙값 {ustats['roi_median']:+.2%}, "
+                 f"MDD 중앙값 {ustats['mdd_median']:.2%}, 거래 {ustats['total_trades']}건")
     if len(mc):
         m0 = mc.iloc[0]
         L.append(f"Monte Carlo: 수익 확률 {m0['prob_profit']:.1%}, MDD 중앙값 {m0['mdd_median']:.2%}, "
@@ -555,7 +644,21 @@ def _wf_combo_set(ep, gp, rp, a) -> list[tuple]:
 
 def parse():
     p = argparse.ArgumentParser()
-    p.add_argument("--symbols", nargs="*", default=None)
+    p.add_argument("--symbols", nargs="*", default=None,
+                   help="explicit symbol list; overrides --universe")
+    p.add_argument("--universe", default="local",
+                   help="'all' (every live USDT perp passing filters), 'topN' (e.g. top100), "
+                        "'local' (whatever is in data/)")
+    p.add_argument("--min-turnover", type=float, default=5e6,
+                   help="24h turnover floor for --universe all/topN")
+    p.add_argument("--min-listed-days", type=int, default=365)
+    p.add_argument("--min-bars", type=int, default=20_000,
+                   help="skip symbols with less history than this (15m bars)")
+    p.add_argument("--basket-size", type=int, default=8,
+                   help="how many symbols go into the deep parameter research")
+    p.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
+    p.add_argument("--skip-scan", action="store_true")
+    p.add_argument("--synthetic-symbols", type=int, default=12)
     p.add_argument("--interval", default="15")
     p.add_argument("--days", type=int, default=1095)
     p.add_argument("--data-dir", default="data")
