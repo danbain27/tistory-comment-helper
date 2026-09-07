@@ -66,8 +66,21 @@ def main(a):
               "유니버스 전체 통계는 실제보다 좋게 나옵니다.")
         report.append("> **생존 편향 주의**: 현재 상장 중인 코인만 스캔합니다. "
                       "상장폐지된(대개 폭락한) 코인이 빠져 있으므로 유니버스 통계는 낙관적입니다.")
+    print(f"  제외 instrument class: {', '.join(a.exclude_symbol_types) or '(없음)'}")
+    print(f"  point-in-time 유동성 하한: {a.min_daily_turnover:,.0f} USDT/day "
+          f"({'적용' if a.min_daily_turnover > 0 else '해제'})")
+    if a.min_daily_turnover > 0:
+        report.append(f"> **유동성 게이트**: 24h 거래대금은 오늘 기준 스냅샷이라 그대로 3년 "
+                      f"백테스트에 쓰면 룩어헤드입니다. 심볼별로 30일 이동중앙값 일거래대금이 "
+                      f"{a.min_daily_turnover:,.0f} USDT 를 처음 넘는 시점 이전 구간을 버리고, "
+                      f"train+validation 구간에서 이 하한을 넘는 봉 비율이 "
+                      f"{a.min_liquid_frac:.0%} 미만인 심볼은 제외합니다. "
+                      f"컷 위치는 앞구간만 보고 정해지므로 test 구간 거래량이 "
+                      f"train/validation 경계를 움직이지 못합니다.")
     scfg = ScanConfig(data_dir=a.data_dir, interval=a.interval, days=a.days,
-                      min_bars=a.min_bars, n_components=a.n_components,
+                      min_bars=a.min_bars, min_daily_turnover=a.min_daily_turnover,
+                      min_liquid_frac=a.min_liquid_frac,
+                      n_components=a.n_components,
                       train_frac=a.train_frac, val_frac=a.val_frac,
                       allow_synthetic=a.allow_synthetic, exec_cfg=cfg, leverage=a.leverage)
 
@@ -649,11 +662,22 @@ def parse():
     p.add_argument("--universe", default="local",
                    help="'all' (every live USDT perp passing filters), 'topN' (e.g. top100), "
                         "'local' (whatever is in data/)")
-    p.add_argument("--min-turnover", type=float, default=5e6,
+    p.add_argument("--min-turnover", type=float, default=1e7,
                    help="24h turnover floor for --universe all/topN")
     p.add_argument("--min-listed-days", type=int, default=365)
+    p.add_argument("--min-daily-turnover", type=float, default=1e7,
+                   help="point-in-time liquidity floor (quote/day, 30d rolling median). "
+                        "History before the symbol first clears it is dropped. 0 disables.")
+    p.add_argument("--min-liquid-frac", type=float, default=0.5,
+                   help="drop symbols that clear the liquidity floor on less than this "
+                        "share of their train+validation bars")
+    p.add_argument("--exclude-symbol-types", nargs="*",
+                   default=list(uni.NON_CRYPTO_SYMBOL_TYPES),
+                   help="Bybit symbolType values to drop (tokenised stocks/ETFs/commodities). "
+                        "Pass with no values to keep everything.")
     p.add_argument("--min-bars", type=int, default=20_000,
-                   help="skip symbols with less history than this (15m bars)")
+                   help="skip symbols with less history than this (15m bars, after the "
+                        "liquidity cut)")
     p.add_argument("--basket-size", type=int, default=8,
                    help="how many symbols go into the deep parameter research")
     p.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))

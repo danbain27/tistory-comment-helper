@@ -24,8 +24,11 @@ from src import universe as uni
 p = argparse.ArgumentParser()
 p.add_argument("--symbols", nargs="*", default=None)
 p.add_argument("--universe", default="all", help="'all', 'topN' (e.g. top100)")
-p.add_argument("--min-turnover", type=float, default=5e6)
+p.add_argument("--min-turnover", type=float, default=1e7)
 p.add_argument("--min-listed-days", type=int, default=365)
+p.add_argument("--exclude-symbol-types", nargs="*", default=list(uni.NON_CRYPTO_SYMBOL_TYPES),
+               help="Bybit symbolType values to drop (tokenised stocks/ETFs/commodities). "
+                    "Pass with no values to keep everything.")
 p.add_argument("--interval", default="15")
 p.add_argument("--days", type=int, default=1095)
 p.add_argument("--out", default="data")
@@ -38,14 +41,23 @@ os.makedirs(a.out, exist_ok=True)
 
 if a.symbols:
     symbols = a.symbols
+    # still cache symbol -> symbolType, so a later `--universe local` run can tell a coin
+    # from a tokenised stock without hitting the API again
+    try:
+        uni.save_type_map(dataio.fetch_bybit_instruments(), a.out)
+    except Exception as exc:
+        print(f"[universe] could not cache instrument types: {exc}")
 else:
     m = re.fullmatch(r"top(\d+)", a.universe.lower())
     u = uni.fetch_universe(min_turnover=a.min_turnover, min_listed_days=a.min_listed_days,
-                           top_n=int(m.group(1)) if m else None)
+                           top_n=int(m.group(1)) if m else None,
+                           exclude_types=tuple(a.exclude_symbol_types),
+                           data_dir=a.out)
     symbols = u["symbol"].tolist()
     u.to_csv(f"{a.out}/universe.csv", index=False)
     print(f"universe: {len(symbols)} symbols "
-          f"(turnover >= {a.min_turnover:,.0f}, listed >= {a.min_listed_days}d)"
+          f"(turnover >= {a.min_turnover:,.0f}, listed >= {a.min_listed_days}d, "
+          f"excluding {a.exclude_symbol_types or 'nothing'})"
           f" -> {a.out}/universe.csv")
 
 bars = a.days * (1440 // int(a.interval))

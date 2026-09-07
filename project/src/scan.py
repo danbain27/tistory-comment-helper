@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from . import data as dataio
+from . import universe as uni
 from .analysis import ADX_BINS, ATR_BINS, BB_BINS, RSI_BINS, VOL_BINS
 from .backtest import ExecConfig
 from .features import add_forward_returns, build_features, time_split
@@ -41,7 +42,15 @@ class ScanConfig:
     data_dir: str = "data"
     interval: str = "15"
     days: int = 1095
-    min_bars: int = 20_000          # ~7 months of 15m bars
+    min_bars: int = 20_000          # ~7 months of 15m bars, AFTER the liquidity cut
+    # Point-in-time liquidity floor, quote units per day. Keeps only the stretch where
+    # the symbol was already liquid, so today's turnover ranking cannot back-date itself
+    # onto years when the coin was untradeable. 0 disables the gate.
+    min_daily_turnover: float = 10_000_000.0
+    # A symbol that was liquid only at launch survives the cut above with a long dead
+    # tail (AKE, HEMI). Require it to clear the floor for most of train+validation too.
+    # Measured over the first train_frac+val_frac of the series, never the test window.
+    min_liquid_frac: float = 0.5
     n_components: int = 3
     train_frac: float = 0.5
     val_frac: float = 0.25
@@ -97,9 +106,20 @@ def scan_symbol(symbol: str, cfg: ScanConfig, seed: int = 0,
             return {"summary": {"symbol": symbol, "status": "no_data"}}
         q = dataio.check_quality(df, dataio.INTERVAL_MS[cfg.interval])
         df = dataio.clean(df)
+        raw_bars = len(df)
+        df, warmup = uni.apply_pit_liquidity(df, cfg.min_daily_turnover)
         if len(df) < cfg.min_bars:
-            return {"summary": {"symbol": symbol, "status": "too_short", "bars": len(df),
-                                "source": src}}
+            return {"summary": {"symbol": symbol,
+                                "status": "illiquid" if warmup else "too_short",
+                                "bars": len(df), "raw_bars": raw_bars,
+                                "illiquid_bars": warmup, "source": src}}
+        liq_frac = uni.liquid_fraction(df, cfg.min_daily_turnover,
+                                       upto_frac=cfg.train_frac + cfg.val_frac)
+        if liq_frac < cfg.min_liquid_frac:
+            return {"summary": {"symbol": symbol, "status": "illiquid",
+                                "bars": len(df), "raw_bars": raw_bars,
+                                "illiquid_bars": warmup,
+                                "pit_liquid_frac": round(liq_frac, 3), "source": src}}
 
         d = add_forward_returns(build_features(df))
         tr, va, te = time_split(d, cfg.train_frac, cfg.val_frac)
@@ -114,6 +134,8 @@ def scan_symbol(symbol: str, cfg: ScanConfig, seed: int = 0,
 
         summary = {
             "symbol": symbol, "status": "ok", "source": src, "bars": len(d),
+            "raw_bars": raw_bars, "illiquid_bars": warmup,
+            "pit_liquid_frac": round(liq_frac, 3),
             "start": str(d["datetime"].iloc[0])[:10], "end": str(d["datetime"].iloc[-1])[:10],
             "missing_bars": q.missing_bars, "extreme_returns": q.extreme_returns,
             "atr_pct_median": float(d["ATR_percent"].median()),
@@ -253,8 +275,15 @@ def validate_symbol(symbol: str, cfg: ScanConfig, ep, gp, rp, seed: int = 0,
         else:
             return {"symbol": symbol, "status": "no_data"}
         df = dataio.clean(df)
-        if len(df) < cfg.min_bars:
-            return {"symbol": symbol, "status": "too_short", "bars": len(df)}
+        raw_bars = len(df)
+        df, warmup = uni.apply_pit_liquidity(df, cfg.min_daily_turnover)
+        liq_frac = uni.liquid_fraction(df, cfg.min_daily_turnover,
+                                       upto_frac=cfg.train_frac + cfg.val_frac)
+        if len(df) < cfg.min_bars or liq_frac < cfg.min_liquid_frac:
+            return {"symbol": symbol,
+                    "status": "illiquid" if warmup or len(df) >= cfg.min_bars else "too_short",
+                    "bars": len(df), "raw_bars": raw_bars, "illiquid_bars": warmup,
+                    "pit_liquid_frac": round(liq_frac, 3)}
         d = build_features(df)
         tr, va, te = time_split(d, cfg.train_frac, cfg.val_frac)
         model = PCAModel(cfg.n_components).fit(d, tr)

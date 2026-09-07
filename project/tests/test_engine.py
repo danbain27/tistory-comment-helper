@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -171,10 +172,93 @@ def test_scan_never_sees_the_test_slice():
           pd.DataFrame(a["pool"]).round(9).equals(pd.DataFrame(b["pool"]).round(9)))
 
 
+def test_tokenised_stocks_are_dropped():
+    """Bybit lists tokenised equities, ETFs and commodity contracts as USDT perps that
+    look exactly like coins by name (CLUSDT is WTI crude, XAUUSDT is gold). Only the
+    symbolType field separates them, so the filter must key on that and nothing else."""
+    from src import universe as uni
+
+    u = pd.DataFrame({
+        "symbol": ["BTCUSDT", "HEMIUSDT", "SOXLUSDT", "KORUUSDT", "CLUSDT", "XAUUSDT"],
+        "symbolType": ["", "innovation", "stock", "ETF", "commodity", "commodity"],
+    })
+    keep, drop = uni.drop_non_crypto(u)
+    check("crypto rows survive the class filter",
+          sorted(keep["symbol"]) == ["BTCUSDT", "HEMIUSDT"],
+          f"kept={sorted(keep['symbol'])}")
+    check("stock / ETF / commodity rows are dropped",
+          sorted(drop["symbol"]) == ["CLUSDT", "KORUUSDT", "SOXLUSDT", "XAUUSDT"],
+          f"dropped={len(drop)}")
+
+    d = tempfile.mkdtemp()
+    uni.save_type_map(u, d)
+    kept, dropped = uni.filter_symbol_types(list(u["symbol"]), d,
+                                            uni.NON_CRYPTO_SYMBOL_TYPES)
+    check("the cached type map reproduces the same split offline",
+          kept == ["BTCUSDT", "HEMIUSDT"] and len(dropped) == 4)
+
+    # a name-based guess would keep CLUSDT and drop nothing useful; make sure we did not
+    # accidentally build one
+    kept2, _ = uni.filter_symbol_types(["CLUSDT"], d, ("stock",))
+    check("the filter drops only the classes it is asked for", kept2 == ["CLUSDT"])
+
+
+def _ramp(n=24_000, thin_bars=6_000, seed=7):
+    """Synthetic frame whose first `thin_bars` are far below any sane liquidity floor."""
+    d = dataio.make_synthetic_ohlcv(n, seed=seed)
+    v = d["volume"].to_numpy().copy()
+    v[:thin_bars] = v[:thin_bars] / 100_000.0
+    d["volume"] = v
+    return d
+
+
+def test_liquidity_gate_is_causal_and_contiguous():
+    """The point-in-time liquidity gate decides how much history a symbol contributes, so
+    it feeds straight into the train/validation boundary. If it could read the test window
+    the split itself would leak."""
+    from src import universe as uni
+
+    d = _ramp()
+    floor = 10_000_000.0
+    mask = uni.pit_liquidity_mask(d, floor)
+
+    cut = int(len(d) * 0.75)
+    mutated = d.copy()
+    rng = np.random.default_rng(5)
+    v = mutated["volume"].to_numpy().copy()
+    v[cut:] = v[cut:] * rng.uniform(0.0, 400.0, len(v) - cut)
+    mutated["volume"] = v
+    check("future volume cannot change a past liquidity verdict",
+          bool((uni.pit_liquidity_mask(mutated, floor).to_numpy()[:cut]
+                == mask.to_numpy()[:cut]).all()))
+
+    kept, warmup = uni.apply_pit_liquidity(d, floor)
+    kept_m, warmup_m = uni.apply_pit_liquidity(mutated, floor)
+    check("the liquidity cut point does not move when the test window changes",
+          warmup == warmup_m and len(kept) == len(kept_m), f"dropped {warmup} bars")
+
+    check("the thin opening stretch is removed", warmup >= 6_000, f"warmup={warmup}")
+    check("what survives is one contiguous block ending at the last bar",
+          len(kept) + warmup == len(d)
+          and float(kept["close"].iloc[-1]) == float(d["close"].iloc[-1])
+          and float(kept["close"].iloc[0]) == float(d["close"].iloc[warmup]))
+
+    thin = d.copy()
+    thin["volume"] = thin["volume"].to_numpy() / 1e9
+    empty, dropped_all = uni.apply_pit_liquidity(thin, floor)
+    check("a symbol that never clears the floor contributes nothing",
+          len(empty) == 0 and dropped_all == len(thin))
+
+    check("a zero floor is a no-op",
+          len(uni.apply_pit_liquidity(d, 0.0)[0]) == len(d))
+
+
 if __name__ == "__main__":
     for fn in (test_entry_is_next_bar_open, test_future_mutation_does_not_change_past,
                test_pca_is_train_only, test_costs_are_charged, test_position_and_grid_limits,
-               test_indicators_are_causal, test_scan_never_sees_the_test_slice):
+               test_indicators_are_causal, test_scan_never_sees_the_test_slice,
+               test_tokenised_stocks_are_dropped,
+               test_liquidity_gate_is_causal_and_contiguous):
         print(f"\n{fn.__name__}")
         fn()
     print(f"\n{'ALL PASS' if not FAILS else 'FAILED: ' + ', '.join(FAILS)}")

@@ -93,11 +93,20 @@ def load_ohlcv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     df.columns = [c.strip().lower() for c in df.columns]
     if "timestamp" not in df.columns:
-        for cand in ("open_time", "time", "date", "datetime"):
+        # epoch columns first - parsing a formatted date back to epoch is lossy and slow
+        for cand in ("timestamp_ms", "open_time", "start_at", "start"):
+            if cand in df.columns:
+                df["timestamp"] = pd.to_numeric(df[cand], errors="coerce")
+                break
+    if "timestamp" not in df.columns:
+        for cand in ("datetime_utc", "time", "date", "datetime"):
             if cand in df.columns:
                 ts = pd.to_datetime(df[cand], utc=True, errors="coerce")
                 df["timestamp"] = (ts.astype("int64") // 1_000_000)
                 break
+    if "timestamp" not in df.columns:
+        raise ValueError(f"{path}: no timestamp column in {sorted(df.columns)}")
+    df = df.dropna(subset=["timestamp"])
     if df["timestamp"].max() < 1e12:  # seconds -> ms
         df["timestamp"] = df["timestamp"].astype("int64") * 1000
     df = df[COLS].astype({c: float for c in COLS[1:]})
@@ -223,8 +232,14 @@ def fetch_bybit_instruments(category: str = "linear", quote: str = "USDT") -> pd
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    keep = ["symbol", "contractType", "status", "baseCoin", "quoteCoin", "launchTime"]
+    keep = ["symbol", "contractType", "status", "baseCoin", "quoteCoin", "launchTime",
+            "symbolType"]
     df = df[[c for c in keep if c in df.columns]].copy()
+    # symbolType tells crypto ("" / "innovation") from tokenised stock / ETF / commodity.
+    # Older API responses omit it entirely; absent means "assume crypto".
+    if "symbolType" not in df.columns:
+        df["symbolType"] = ""
+    df["symbolType"] = df["symbolType"].fillna("").astype(str)
     df["launchTime"] = pd.to_numeric(df.get("launchTime"), errors="coerce")
     df = df[(df["quoteCoin"] == quote) & (df["status"] == "Trading")]
     if "contractType" in df:
