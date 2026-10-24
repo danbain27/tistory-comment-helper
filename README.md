@@ -31,6 +31,20 @@ python collect.py        # 기본 10개
 python collect.py 5      # 5개만
 ```
 
+## 최근 3일 글만 찾기 (find_recent.py)
+
+```
+python find_recent.py          # 3일 이내, 비슷한 게임 글 10개
+python find_recent.py 5        # 5개만
+python find_recent.py 10 7     # 7일 이내 10개
+```
+
+- 티스토리 자체 검색(최신순)을 써서 발행일이 정확합니다.
+- **댓글을 막아둔 글은 자동 제외** — 댓글 영역이 있는 글만 담습니다(로그인 필요 여부도 표시).
+- 슈로대·파엠·SRPG·레트로·로그라이크 등 비슷한 장르일수록 위에 나옵니다.
+- 결과: `reports/recent_날짜.md` → Claude에게 주고 "요약하고 댓글 초안 뽑아줘"
+- 키워드/장르 단어는 파일 상단 `KEYWORDS`, `GENRE_TERMS`에서 수정
+
 ## 설정 (collect.py 상단)
 
 - `KEYWORDS` : 검색할 키워드 목록 (현재: 건프라/프라모델 + 게임 리뷰·공략·슈로대·스팀·스위치·PS5·RPG)
