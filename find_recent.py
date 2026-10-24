@@ -135,6 +135,77 @@ def inspect_post(url, entry_id):
 
 
 # ─────────────────────────────────────────────
+# 댓글 초안 (AI 없이 템플릿으로 — 무료, 등록 전 꼭 다듬기)
+# ─────────────────────────────────────────────
+POST_TYPES = [
+    # (판별 단어, 초안 템플릿들) — {game}은 게임명, {point}는 본문 핵심 문장
+    (["한글패치", "한글화", "패치"], [
+        "{game} 한글패치 작업하시느라 고생 많으셨어요. 덕분에 편하게 즐길 수 있겠네요, 감사합니다!",
+        "{point} 이 부분 보니 정성이 느껴지네요. {game} 꼭 해보겠습니다.",
+    ]),
+    (["공략", "육성", "가이드", "총정리", "팁"], [
+        "{game} 공략 깔끔하게 정리해 주셔서 잘 봤습니다. 저도 공략 글 쓰는 입장이라 이렇게 정리하는 게 얼마나 손이 많이 가는지 알아요.",
+        "{point} 이 부분이 특히 도움이 됐어요. 진행할 때 참고하겠습니다!",
+    ]),
+    (["리뷰", "후기", "소감", "클리어", "엔딩"], [
+        "{game} 후기 재밌게 읽었어요. 직접 플레이하신 느낌이 잘 전해지네요.",
+        "{point} 저도 이 부분 공감해요. 좋은 글 감사합니다.",
+    ]),
+    (["출시", "업데이트", "추가", "발매", "공개", "소식"], [
+        "{game} 소식 반갑네요! 정리해 주셔서 한눈에 들어왔어요.",
+        "{point} 이건 몰랐던 내용이네요. 기대됩니다.",
+    ]),
+]
+DEFAULT_TEMPLATES = [
+    "{game} 이야기 재밌게 읽었어요. 좋은 글 감사합니다!",
+    "{point} 이 부분 인상 깊었어요. 자주 놀러 올게요.",
+]
+
+
+def game_name(title):
+    """제목에서 게임명 추출: 《》·「」·[] 안 → '공략/한글패치' 앞부분 → 제목 앞부분."""
+    m = re.search(r"[《「『](.+?)[》」』]", title)
+    if m:
+        return m.group(1).strip()
+    t = re.sub(r"^\[[^\]]*\]\s*", "", title)
+    m = re.match(r"(.+?)\s*(?:공략|한글패치|리뷰|후기|육성|초보자|업데이트|출시|총정리|[,|｜:\-—])", t)
+    name = (m.group(1) if m else t).strip()
+    return name[:25] or "이 게임"
+
+
+def key_point(text, title):
+    """본문에서 숫자·고유 정보가 들어간 짧은 문장 하나를 골라 구체성을 준다."""
+    sentences = re.split(r"(?<=[.!?다요])\s+|\n", text)
+    best, best_score = "", 0
+    for s in sentences:
+        s = s.strip()
+        if not 15 <= len(s) <= 60 or s in title:
+            continue
+        # 링크·날짜 목록·해시값 같은 줄 제외: 한글이 절반 이상인 문장만
+        if "http" in s or re.search(r"20\d\d\.\d\d\.\d\d|\[.*\]", s):
+            continue
+        if len(re.findall(r"[가-힣]", s)) < len(s.replace(" ", "")) / 2:
+            continue
+        score = len(re.findall(r"\d", s)) + 2 * any(w in s for w in ("추천", "핵심", "중요", "주의", "팁"))
+        if score > best_score:
+            best, best_score = s, score
+    if not best:
+        return "정리해 주신 내용 중"
+    return f"'{best.rstrip('.')}'"
+
+
+def make_drafts(title, text):
+    game = game_name(title)
+    point = key_point(text, title)
+    templates = DEFAULT_TEMPLATES
+    for words, tpl in POST_TYPES:
+        if any(w in title for w in words):
+            templates = tpl
+            break
+    return [t.format(game=game, point=point) for t in templates]
+
+
+# ─────────────────────────────────────────────
 # 메인
 # ─────────────────────────────────────────────
 def find_posts(target, days, exclude_urls=None, log=print):
@@ -188,6 +259,7 @@ def find_posts(target, days, exclude_urls=None, log=print):
             "like_count": e.get("likeCount", 0),
             "login_only": info["login_only"],
             "text": info["text"],
+            "drafts": make_drafts(e["entryTitle"], info["text"]),
         })
         log(f"[OK] {len(posts)}/{target} {e['blogTitle']} · {e['entryTitle'][:40]}")
     return posts
@@ -213,6 +285,8 @@ def write_report(path, posts, days):
             f"- 블로그: {p['blog']} ({p['host']})",
             f"- 발행: {p['date']} · 키워드: {p['keyword']}",
             f"- 댓글: 허용{login} · 현재 댓글 {p['comment_count']} · 좋아요 {p['like_count']}",
+            "", "**댓글 초안** (템플릿 — 글을 읽고 다듬어서 직접 등록)", "",
+            *[f"{n}. {d}" for n, d in enumerate(p["drafts"], 1)],
             "", "**본문 발췌**", "",
             "> " + excerpt.replace("\n", "\n> "), "",
         ]
