@@ -378,6 +378,10 @@ def main():
     write_report(path, posts, days)
     html_path = path[:-3] + ".html"
     write_html_report(html_path, posts, days)
+    # comment_assist.py 가 읽는 목록
+    with open(path[:-3] + ".json", "w", encoding="utf-8") as f:
+        json.dump([{k: p[k] for k in ("title", "url", "blog", "drafts")} for p in posts],
+                  f, ensure_ascii=False, indent=2)
 
     history.setdefault("urls", []).extend(p["url"] for p in posts)
     save_history(history)

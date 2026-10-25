@@ -49,6 +49,19 @@ python find_recent.py 10 7     # 7일 이내 10개
 - 같은 내용의 `reports/recent_날짜.md`도 저장 (더 자연스러운 초안이 필요하면 Claude에게 주기)
 - 키워드/장르 단어는 파일 상단 `KEYWORDS`, `GENRE_TERMS`에서 수정
 
+## 댓글 칸에 초안 넣기 (comment_assist.py)
+
+```
+py -m pip install playwright      # 처음 한 번
+py find_recent.py                 # 후보 찾기
+py comment_assist.py              # 글을 하나씩 열고 댓글 칸에 초안 1을 넣어 둠
+```
+
+- **등록 버튼은 누르지 않습니다.** 글을 읽고 초안을 고친 뒤 직접 [등록] → 명령창에서 Enter 누르면 다음 글
+- 처음 한 번은 열린 브라우저(Edge)에서 티스토리 로그인 — 로그인 정보는 `browser_profile/`에 남음
+- 댓글 칸을 못 찾는 스킨이면 명령창에 초안을 보여 주니 복사해서 붙여넣기
+- 끝내려면 명령창에 `q`
+
 ## 설정 (collect.py 상단)
 
 - `KEYWORDS` : 검색할 키워드 목록 (현재: 건프라/프라모델 + 게임 리뷰·공략·슈로대·스팀·스위치·PS5·RPG)

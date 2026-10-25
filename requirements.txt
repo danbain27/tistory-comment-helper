@@ -3,3 +3,4 @@ beautifulsoup4
 ddgs
 flask
 gunicorn
+playwright
