@@ -25,7 +25,7 @@ except Exception:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
-PROFILE_DIR = os.path.join(BASE_DIR, "browser_profile")
+PROFILE_DIR = os.path.join(BASE_DIR, "browser_profile", "chrome")
 
 # 스킨마다 댓글 칸 구조가 달라서 후보를 차례로 찾는다
 COMMENT_BOX_SELECTORS = [
@@ -47,8 +47,8 @@ def latest_list():
 
 
 def launch(p):
-    """윈도우 기본 Edge → 크롬 → 내장 Chromium 순서로 시도."""
-    for channel in ("msedge", "chrome", None):
+    """설치된 크롬으로 연다. 크롬이 없으면 Playwright 내장 Chromium."""
+    for channel in ("chrome", None):
         try:
             return p.chromium.launch_persistent_context(
                 PROFILE_DIR, channel=channel, headless=False, no_viewport=True,
@@ -56,7 +56,7 @@ def launch(p):
             )
         except Exception:
             continue
-    sys.exit("브라우저를 열 수 없습니다. py -m playwright install chromium 을 실행해 보세요.")
+    sys.exit("크롬을 열 수 없습니다. 크롬이 설치돼 있는지 확인하거나 py -m playwright install chromium 을 실행해 보세요.")
 
 
 def find_comment_box(page):
