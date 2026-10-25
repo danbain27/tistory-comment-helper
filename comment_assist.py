@@ -27,7 +27,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 PROFILE_DIR = os.path.join(BASE_DIR, "browser_profile", "chrome")
 
-READ_SECONDS = 60   # 글을 연 뒤 댓글 칸으로 가기 전까지 읽는 시간(초)
+READ_SECONDS = 90   # 글을 연 뒤 댓글 칸으로 가기 전까지 읽는 시간(초)
+SCROLL_EVERY = 3    # 읽는 동안 몇 초마다 조금씩 내려갈지
 
 # 스킨마다 댓글 칸 구조가 달라서 후보를 차례로 찾는다
 COMMENT_BOX_SELECTORS = [
@@ -101,10 +102,32 @@ def put_draft(page, box, draft):
         page.keyboard.insert_text(draft)
 
 
+def article_bottom(page):
+    """본문 끝(댓글 영역 시작) 위치. 못 찾으면 페이지 높이의 80%."""
+    return page.evaluate("""() => {
+        const c = document.querySelector('[data-tistory-react-app="Comment"], div[id$="Comment"], .comments, #comment');
+        const y = c ? c.getBoundingClientRect().top + window.scrollY : document.body.scrollHeight * 0.8;
+        return Math.max(0, y - window.innerHeight);
+    }""")
+
+
 def wait_reading(page, seconds):
-    """글을 읽는 동안 대기. 남은 시간을 명령창에 표시한다."""
+    """글을 읽는 동안 본문 끝까지 천천히 스크롤하며 대기. 남은 시간을 명령창에 표시한다."""
+    try:
+        bottom = article_bottom(page)
+    except Exception:
+        bottom = 0
+    steps = max(1, seconds // SCROLL_EVERY)
     for left in range(seconds, 0, -1):
         print(f"\r  글 읽는 중… 댓글 칸으로 가기까지 {left:2d}초 ", end="", flush=True)
+        elapsed = seconds - left
+        if elapsed % SCROLL_EVERY == 0 and bottom:
+            # 지금까지 진행한 만큼의 위치로 부드럽게 이동 (직접 스크롤해도 따라잡기만 함)
+            target = bottom * min(1, (elapsed // SCROLL_EVERY) / max(1, steps - 1))
+            try:
+                page.evaluate("y => { if (window.scrollY < y) window.scrollTo({top: y, behavior: 'smooth'}); }", target)
+            except Exception:
+                pass
         page.wait_for_timeout(1000)
     print("\r  읽기 시간 끝 — 댓글 칸으로 이동합니다.          ")
 
