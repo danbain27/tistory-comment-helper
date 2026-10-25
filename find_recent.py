@@ -226,7 +226,7 @@ def find_posts(target, days, exclude_urls=None, log=print):
             if any(own in host for own in OWN_BLOGS) or score < MIN_SCORE:
                 continue
             candidates[url] = dict(e, keyword=kw, host=host, score=score)
-        log(f"[검색] {kw} → 누적 후보 {len(candidates)}")
+        log(f"[검색] {kw} → {days}일 이내 관련 글 합계 {len(candidates)}개")
 
     posts, seen_blogs = [], set()
     # 관련도 높은 글 먼저, 같으면 최신 글 먼저

@@ -60,17 +60,43 @@ def launch(p):
 
 
 def find_comment_box(page):
-    # 댓글 영역은 스크롤해야 불러오는 스킨이 있어 맨 아래까지 내린다
-    page.mouse.wheel(0, 30000)
-    page.wait_for_timeout(1500)
+    # 댓글 영역은 스크롤해야 불러오는 스킨이 있어 조금씩 맨 아래까지 내린다
+    for _ in range(12):
+        page.mouse.wheel(0, 2500)
+        page.wait_for_timeout(250)
+    app = page.locator('[data-tistory-react-app="Comment"]').first
+    try:
+        app.scroll_into_view_if_needed(timeout=3000)
+        page.wait_for_timeout(1000)
+    except Exception:
+        pass
     for sel in COMMENT_BOX_SELECTORS:
+        # 숨겨진 답글 칸 등은 건너뛰고 화면에 보이는 칸만
+        box = page.locator(f"{sel} >> visible=true").first
         try:
-            box = page.locator(sel).first
             box.wait_for(state="visible", timeout=3000)
             return box
         except PWTimeout:
             continue
     return None
+
+
+def put_draft(page, box, draft):
+    """댓글 칸을 클릭해 초안을 넣는다. React 댓글 칸이 값을 못 받으면 키보드 입력으로 다시."""
+    box.scroll_into_view_if_needed()
+    box.click()
+    try:
+        box.fill(draft)
+    except Exception:
+        pass
+    try:
+        ok = draft[:10] in (box.input_value() if box.evaluate("e => 'value' in e") else box.inner_text())
+    except Exception:
+        ok = False
+    if not ok:
+        box.click()
+        page.keyboard.press("Control+A")
+        page.keyboard.insert_text(draft)
 
 
 def ask(msg):
@@ -99,9 +125,7 @@ def main():
             draft = post["drafts"][0]
             box = find_comment_box(page)
             if box:
-                box.scroll_into_view_if_needed()
-                box.fill(draft)
-                box.focus()
+                put_draft(page, box, draft)
                 print("  댓글 칸에 초안 1을 넣었습니다.")
             else:
                 print("  댓글 칸을 못 찾았습니다. 아래 초안을 복사해 직접 붙여넣으세요.")
