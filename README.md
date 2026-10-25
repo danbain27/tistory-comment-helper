@@ -31,10 +31,10 @@ python collect.py        # 기본 10개
 python collect.py 5      # 5개만
 ```
 
-## 최근 3일 글만 찾기 (find_recent.py)
+## 최근 2일 글만 찾기 (find_recent.py)
 
 ```
-python find_recent.py          # 3일 이내, 비슷한 게임 글 10개
+python find_recent.py          # 2일 이내, 비슷한 게임 글 10개
 python find_recent.py 5        # 5개만
 python find_recent.py 10 7     # 7일 이내 10개
 ```
