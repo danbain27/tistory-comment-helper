@@ -27,6 +27,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 PROFILE_DIR = os.path.join(BASE_DIR, "browser_profile", "chrome")
 
+READ_SECONDS = 60   # 글을 연 뒤 댓글 칸으로 가기 전까지 읽는 시간(초)
+
 # 스킨마다 댓글 칸 구조가 달라서 후보를 차례로 찾는다
 COMMENT_BOX_SELECTORS = [
     '[data-tistory-react-app="Comment"] textarea',
@@ -99,6 +101,14 @@ def put_draft(page, box, draft):
         page.keyboard.insert_text(draft)
 
 
+def wait_reading(page, seconds):
+    """글을 읽는 동안 대기. 남은 시간을 명령창에 표시한다."""
+    for left in range(seconds, 0, -1):
+        print(f"\r  글 읽는 중… 댓글 칸으로 가기까지 {left:2d}초 ", end="", flush=True)
+        page.wait_for_timeout(1000)
+    print("\r  읽기 시간 끝 — 댓글 칸으로 이동합니다.          ")
+
+
 def ask(msg):
     return input(msg).strip().lower()
 
@@ -122,6 +132,7 @@ def main():
                 print(f"  열기 실패 ({ex.__class__.__name__}) → 건너뜀")
                 continue
 
+            wait_reading(page, READ_SECONDS)
             draft = post["drafts"][0]
             box = find_comment_box(page)
             if box:
