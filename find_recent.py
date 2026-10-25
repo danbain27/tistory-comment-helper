@@ -17,6 +17,9 @@ import os
 import re
 import json
 import datetime
+import html
+import pathlib
+import webbrowser
 from urllib.parse import quote, urlparse
 
 import requests
@@ -168,7 +171,7 @@ def game_name(title):
     if m:
         return m.group(1).strip()
     t = re.sub(r"^\[[^\]]*\]\s*", "", title)
-    m = re.match(r"(.+?)\s*(?:공략|한글패치|리뷰|후기|육성|초보자|업데이트|출시|총정리|[,|｜:\-—])", t)
+    m = re.match(r"(.+?)\s*(?:공략|한글\s?패치|리뷰|후기|육성|초보자|업데이트|출시|총정리|[,|｜:\-—])", t)
     name = (m.group(1) if m else t).strip()
     return name[:25] or "이 게임"
 
@@ -191,7 +194,7 @@ def key_point(text, title):
             best, best_score = s, score
     if not best:
         return "정리해 주신 내용 중"
-    return f"'{best.rstrip('.')}'"
+    return f"'{best.strip(' :·-').rstrip('.')}'"
 
 
 def make_drafts(title, text):
@@ -294,6 +297,72 @@ def write_report(path, posts, days):
         f.write("\n".join(lines))
 
 
+HTML_PAGE = """<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>티스토리 교류 후보 {today}</title>
+<style>
+:root {{ --bg:#f6f7f9; --card:#fff; --text:#1d2129; --sub:#667085; --line:#e4e7ec; --accent:#2563eb; --badge:#fff4e5; --badge-text:#b54708; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg:#14161a; --card:#1e2127; --text:#e6e8eb; --sub:#9aa3af; --line:#2e333b; --accent:#60a5fa; --badge:#3a2a12; --badge-text:#fbbf68; }} }}
+* {{ box-sizing:border-box; }}
+body {{ margin:0; background:var(--bg); color:var(--text); font:15px/1.6 "Malgun Gothic","Apple SD Gothic Neo",sans-serif; }}
+main {{ max-width:860px; margin:0 auto; padding:24px 16px 60px; }}
+h1 {{ font-size:22px; margin:0 0 4px; }}
+.lead {{ color:var(--sub); margin:0 0 20px; font-size:14px; }}
+.card {{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:14px; }}
+.card.done {{ opacity:.55; }}
+.title {{ font-size:17px; font-weight:700; color:var(--accent); text-decoration:none; }}
+.title:hover {{ text-decoration:underline; }}
+.meta {{ color:var(--sub); font-size:13px; margin:4px 0 10px; }}
+.badge {{ background:var(--badge); color:var(--badge-text); border-radius:6px; padding:1px 7px; font-size:12px; margin-left:6px; }}
+.excerpt {{ color:var(--sub); font-size:14px; margin:0 0 12px; }}
+.draft {{ display:flex; gap:8px; align-items:flex-start; border-top:1px dashed var(--line); padding:8px 0; }}
+.draft p {{ margin:0; flex:1; }}
+button {{ border:1px solid var(--line); background:var(--bg); color:var(--text); border-radius:8px; padding:4px 10px; cursor:pointer; font:inherit; font-size:13px; white-space:nowrap; }}
+button:hover {{ border-color:var(--accent); }}
+.actions {{ display:flex; gap:8px; margin-top:8px; }}
+.open {{ background:var(--accent); color:#fff; border-color:var(--accent); text-decoration:none; border-radius:8px; padding:4px 12px; font-size:13px; }}
+</style></head><body><main>
+<h1>티스토리 교류 후보 · {today}</h1>
+<p class="lead">최근 {days}일 · 비슷한 게임 · 댓글 허용 글 {count}개. 제목을 눌러 글을 읽고, 초안을 복사해 다듬어서 직접 댓글을 남기세요.</p>
+{cards}
+</main>
+<script>
+function copyText(btn) {{
+  const text = btn.parentElement.querySelector('p').innerText;
+  navigator.clipboard.writeText(text).then(() => {{ btn.innerText = '복사됨'; setTimeout(() => btn.innerText = '복사', 1500); }});
+}}
+function toggleDone(btn) {{
+  const card = btn.closest('.card');
+  card.classList.toggle('done');
+  btn.innerText = card.classList.contains('done') ? '완료 취소' : '댓글 완료';
+}}
+</script></body></html>
+"""
+
+
+def write_html_report(path, posts, days):
+    e = html.escape
+    cards = []
+    for i, p in enumerate(posts, 1):
+        login = '<span class="badge">로그인 필요</span>' if p["login_only"] else ""
+        excerpt = re.sub(r"\s+", " ", p["text"])[:220] + "…"
+        drafts = "".join(
+            f'<div class="draft"><p>{e(d)}</p><button onclick="copyText(this)">복사</button></div>'
+            for d in p["drafts"]
+        )
+        cards.append(
+            f'<div class="card"><a class="title" href="{e(p["url"])}" target="_blank" rel="noopener">{i}. {e(p["title"])}</a>'
+            f'<div class="meta">{e(p["blog"])} · {e(p["date"])} · 댓글 {p["comment_count"]} · 좋아요 {p["like_count"]}{login}</div>'
+            f'<p class="excerpt">{e(excerpt)}</p>{drafts}'
+            f'<div class="actions"><a class="open" href="{e(p["url"])}" target="_blank" rel="noopener">글 열기</a>'
+            f'<button onclick="toggleDone(this)">댓글 완료</button></div></div>'
+        )
+    page = HTML_PAGE.format(today=datetime.date.today(), days=days, count=len(posts), cards="\n".join(cards))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(page)
+
+
 def main():
     target = int(sys.argv[1]) if len(sys.argv) > 1 else TARGET_COUNT
     days = int(sys.argv[2]) if len(sys.argv) > 2 else WITHIN_DAYS
@@ -307,10 +376,13 @@ def main():
     os.makedirs(REPORTS_DIR, exist_ok=True)
     path = os.path.join(REPORTS_DIR, f"recent_{datetime.date.today()}.md")
     write_report(path, posts, days)
+    html_path = path[:-3] + ".html"
+    write_html_report(html_path, posts, days)
 
     history.setdefault("urls", []).extend(p["url"] for p in posts)
     save_history(history)
-    print(f"\n저장: {path}")
+    print(f"\n저장: {html_path}")
+    webbrowser.open(pathlib.Path(html_path).resolve().as_uri())
 
 
 if __name__ == "__main__":
