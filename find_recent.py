@@ -20,6 +20,7 @@ import datetime
 import html
 import pathlib
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urlparse
 
 import requests
@@ -41,6 +42,7 @@ except Exception:
 WITHIN_DAYS = 2
 TARGET_COUNT = 10
 MAX_PAGES = 3              # 키워드당 최신순 검색 페이지 수
+WORKERS = 8                # 동시에 보내는 요청 수 (속도)
 
 # 내 블로그(슈로대·파엠·레트로 SRPG·스위치 게임)와 비슷한 게임 키워드
 KEYWORDS = [
@@ -216,8 +218,11 @@ def find_posts(target, days, exclude_urls=None, log=print):
     cutoff = datetime.date.today() - datetime.timedelta(days=days)
 
     candidates = {}
-    for kw in KEYWORDS:
-        for e in search_recent(kw, cutoff):
+    # 키워드 검색을 동시에 보내고, 결과는 키워드 순서대로 합친다
+    with ThreadPoolExecutor(WORKERS) as ex:
+        results = list(ex.map(lambda k: search_recent(k, cutoff), KEYWORDS))
+    for kw, found in zip(KEYWORDS, results):
+        for e in found:
             url = e["entryUrl"]
             host = urlparse(e["blogUrl"]).netloc.lower()
             if url in candidates or url in exclude_urls:
@@ -231,40 +236,58 @@ def find_posts(target, days, exclude_urls=None, log=print):
     posts, seen_blogs = [], set()
     # 관련도 높은 글 먼저, 같으면 최신 글 먼저
     ranked = sorted(candidates.items(), key=lambda x: (x[1]["score"], x[1]["entryPublished"]), reverse=True)
+    # 블로그당 가장 관련 높은 글 하나만 후보로
+    best_per_blog = []
     for url, e in ranked:
+        if e["host"] not in seen_blogs:
+            seen_blogs.add(e["host"])
+            best_per_blog.append((url, e))
+
+    def check(item):
+        url, e = item
+        try:
+            return inspect_post(url, e["entryId"]), None
+        except Exception as ex:
+            return None, ex
+
+    # 필요한 개수의 두 배씩 동시에 확인하고, 관련도 순서대로 채운다
+    batch = max(target * 2, WORKERS)
+    for start in range(0, len(best_per_blog), batch):
         if len(posts) >= target:
             break
-        if e["host"] in seen_blogs:
-            continue
-        try:
-            info = inspect_post(url, e["entryId"])
-        except Exception as ex:
-            log(f"[건너뜀] 접속 실패 {url} ({ex.__class__.__name__})")
-            continue
-        if not info["comments"]:
-            log(f"[제외] 댓글 막힘 · {e['entryTitle'][:40]}")
-            continue
-        ad = detect_ad(e["entryTitle"], info["text"], info["soup"])
-        if ad:
-            log(f"[제외] 광고글({ad}) · {e['entryTitle'][:40]}")
-            continue
-        if len(info["text"]) < 150:
-            continue
-        seen_blogs.add(e["host"])
-        posts.append({
-            "title": e["entryTitle"],
-            "url": url,
-            "host": e["host"],
-            "blog": e["blogTitle"],
-            "date": e["entryPublished"][:16].replace("T", " "),
-            "keyword": e["keyword"],
-            "comment_count": e.get("commentCount", 0),
-            "like_count": e.get("likeCount", 0),
-            "login_only": info["login_only"],
-            "text": info["text"],
-            "drafts": make_drafts(e["entryTitle"], info["text"]),
-        })
-        log(f"[OK] {len(posts)}/{target} {e['blogTitle']} · {e['entryTitle'][:40]}")
+        chunk = best_per_blog[start:start + batch]
+        with ThreadPoolExecutor(WORKERS) as ex:
+            checked = list(ex.map(check, chunk))
+        for (url, e), (info, err) in zip(chunk, checked):
+            if len(posts) >= target:
+                break
+            if err:
+                log(f"[건너뜀] 접속 실패 {url} ({err.__class__.__name__})")
+                continue
+            if not info["comments"]:
+                log(f"[제외] 댓글 막힘 · {e['entryTitle'][:40]}")
+                continue
+            ad = detect_ad(e["entryTitle"], info["text"], info["soup"])
+            if ad:
+                log(f"[제외] 광고글({ad}) · {e['entryTitle'][:40]}")
+                continue
+            if len(info["text"]) < 150:
+                continue
+            posts.append({
+                "title": e["entryTitle"],
+                "url": url,
+                "entry_id": e["entryId"],
+                "host": e["host"],
+                "blog": e["blogTitle"],
+                "date": e["entryPublished"][:16].replace("T", " "),
+                "keyword": e["keyword"],
+                "comment_count": e.get("commentCount", 0),
+                "like_count": e.get("likeCount", 0),
+                "login_only": info["login_only"],
+                "text": info["text"],
+                "drafts": make_drafts(e["entryTitle"], info["text"]),
+            })
+            log(f"[OK] {len(posts)}/{target} {e['blogTitle']} · {e['entryTitle'][:40]}")
     return posts
 
 
@@ -364,14 +387,15 @@ def write_html_report(path, posts, days):
 
 
 def main():
-    target = int(sys.argv[1]) if len(sys.argv) > 1 else TARGET_COUNT
-    days = int(sys.argv[2]) if len(sys.argv) > 2 else WITHIN_DAYS
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    target = int(args[0]) if len(args) > 0 else TARGET_COUNT
+    days = int(args[1]) if len(args) > 1 else WITHIN_DAYS
 
     history = load_history()
     posts = find_posts(target, days, exclude_urls=set(history.get("urls", [])))
     if not posts:
         print("조건에 맞는 글을 찾지 못했습니다.")
-        return
+        sys.exit(1)
 
     os.makedirs(REPORTS_DIR, exist_ok=True)
     path = os.path.join(REPORTS_DIR, f"recent_{datetime.date.today()}.md")
@@ -380,13 +404,14 @@ def main():
     write_html_report(html_path, posts, days)
     # comment_assist.py 가 읽는 목록
     with open(path[:-3] + ".json", "w", encoding="utf-8") as f:
-        json.dump([{k: p[k] for k in ("title", "url", "blog", "drafts")} for p in posts],
+        json.dump([{k: p[k] for k in ("title", "url", "entry_id", "blog", "drafts")} for p in posts],
                   f, ensure_ascii=False, indent=2)
 
     history.setdefault("urls", []).extend(p["url"] for p in posts)
     save_history(history)
     print(f"\n저장: {html_path}")
-    webbrowser.open(pathlib.Path(html_path).resolve().as_uri())
+    if "--no-open" not in sys.argv:
+        webbrowser.open(pathlib.Path(html_path).resolve().as_uri())
 
 
 if __name__ == "__main__":

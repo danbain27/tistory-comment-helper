@@ -15,6 +15,9 @@ import os
 import sys
 import glob
 import json
+import queue
+import threading
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -132,8 +135,56 @@ def wait_reading(page, seconds):
     print("\r  읽기 시간 끝 — 댓글 칸으로 이동합니다.          ")
 
 
-def ask(msg):
-    return input(msg).strip().lower()
+def start_keyboard():
+    """명령창 입력을 따로 받아 둔다 — 기다리는 동안에도 등록 여부를 계속 확인하기 위해."""
+    q = queue.Queue()
+
+    def loop():
+        while True:
+            try:
+                q.put(input().strip().lower())
+            except EOFError:
+                break
+    threading.Thread(target=loop, daemon=True).start()
+    return q
+
+
+def logged_in(ctx):
+    names = {c["name"] for c in ctx.cookies("https://www.tistory.com")}
+    return bool(names & {"TSSESSION", "TSSESSION_KEEP"})
+
+
+def comment_total(page, post):
+    """글의 현재 댓글 수(티스토리 댓글 API). 알 수 없으면 None."""
+    if not post.get("entry_id"):
+        return None
+    u = urlparse(post["url"])
+    try:
+        r = page.request.get(f"{u.scheme}://{u.netloc}/m/api/{post['entry_id']}/comment", timeout=8000)
+        return r.json()["data"]["totalItems"]
+    except Exception:
+        return None
+
+
+def wait_for_submit(page, post, keys):
+    """사람이 [등록]을 누를 때까지 기다린다. 댓글 수가 늘면 다음 글로. Enter=건너뛰기, q=끝내기."""
+    before = comment_total(page, post)
+    if before is None:
+        print("  → 고친 뒤 직접 [등록]을 누르고, 명령창에서 Enter (끝내기: q)")
+    else:
+        print("  → 고친 뒤 직접 [등록]을 누르면 자동으로 다음 글로 넘어갑니다. (건너뛰기: Enter · 끝내기: q)")
+    while True:
+        try:
+            cmd = keys.get(timeout=3)
+            return "quit" if cmd == "q" else "skip"
+        except queue.Empty:
+            pass
+        if before is not None:
+            now = comment_total(page, post)
+            if now is not None and now > before:
+                print("  등록 확인! 3초 뒤 다음 글로 넘어갑니다.")
+                page.wait_for_timeout(3000)
+                return "done"
 
 
 def main():
@@ -144,8 +195,14 @@ def main():
         ctx = launch(p)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
+        keys = start_keyboard()
         page.goto("https://www.tistory.com/")
-        ask("▶ 티스토리에 로그인돼 있는지 확인하세요(안 돼 있으면 지금 로그인). 준비되면 Enter: ")
+        if logged_in(ctx):
+            print("티스토리 로그인 확인됨 — 바로 시작합니다.")
+        else:
+            print("▶ 열린 크롬 창에서 티스토리에 로그인한 뒤, 명령창에서 Enter")
+            keys.get()
+        done = 0
 
         for i, post in enumerate(posts, 1):
             print(f"\n[{i}/{len(posts)}] {post['blog']} · {post['title']}")
@@ -167,11 +224,13 @@ def main():
             if len(post["drafts"]) > 1:
                 print(f"  (다른 초안) {post['drafts'][1]}")
 
-            cmd = ask("  → 글을 읽고 고친 뒤 직접 [등록]을 누르세요. 다음 글: Enter · 끝내기: q : ")
-            if cmd == "q":
+            result = wait_for_submit(page, post, keys)
+            if result == "done":
+                done += 1
+            elif result == "quit":
                 break
 
-        print("\n끝났습니다. 브라우저를 닫습니다.")
+        print(f"\n끝났습니다. 댓글 {done}개 등록 확인. 브라우저를 닫습니다.")
         ctx.close()
 
 
