@@ -1,0 +1,280 @@
+meta:
+  generated_by: src/run_research.py
+  symbols:
+  - ZROUSDT
+  - BNBUSDT
+  - ETHFIUSDT
+  - LTCUSDT
+  - ICPUSDT
+  - SOLUSDT
+  - TAOUSDT
+  - PENDLEUSDT
+  universe_source: local
+  universe_size: 150
+  universe_stats_oos:
+    symbols_tested: 52
+    total_trades: 4087
+    roi_median: -0.15351455470248632
+    roi_mean: -0.11423023834891169
+    positive_fraction: 0.21153846153846154
+    mdd_median: -0.32107125208691334
+    mdd_worst: -0.5428545950818127
+    pf_median: 0.8058208411788108
+    win_rate_median: 0.8301271040879423
+    symbols_with_liquidation: 0
+  interval_minutes: 15
+  data_source:
+    ZROUSDT: csv
+    BNBUSDT: csv
+    ETHFIUSDT: csv
+    LTCUSDT: csv
+    ICPUSDT: csv
+    SOLUSDT: csv
+    TAOUSDT: csv
+    PENDLEUSDT: csv
+  primary_symbol: ZROUSDT
+  verdict: 폐기
+  checks_passed: 3/11
+execution:
+  initial_capital: 10000.0
+  fee_taker: 0.00055
+  fee_maker: 0.0002
+  grid_uses_maker: false
+  slippage_bp: 2.0
+  funding_rate_8h: 0.0001
+  use_funding: true
+  entry_delay_bars: 1
+  bars_per_year: 35040
+  allow_reentry_same_bar: false
+  exit_from_next_bar: true
+entry:
+  rsi_max: 40
+  bbp_max: 0.1
+  vol_min: 1.0
+  trend: ema20>ema50
+  adx_min: 20.0
+  adx_max: null
+  pc1_min_q: null
+  pc1_max_q: null
+  pc2_min_q: null
+  pc2_max_q: null
+  pc3_min_q: null
+  pc3_max_q: null
+grid:
+  step_atr: 2.0
+  max_entries: 2
+  weights: equal
+  geometric: false
+risk:
+  leverage: 2.0
+  position_pct: 1.0
+  tp_mode: atr
+  tp_value: 1.5
+  sl_mode: pct
+  sl_value: 0.05
+  max_hold_bars: 96
+  cooldown_bars: 1
+  maint_margin_rate: 0.005
+pca:
+  n_components: 3
+  fit_policy: train slice only; refit on a rolling window in live trading (see README)
+  features:
+  - RSI_norm
+  - BB_percent_b
+  - BB_width
+  - Volume_ratio
+  - ATR_percent
+  - EMA20_distance
+  - EMA50_distance
+  - Return_1
+  - Return_4
+  - Return_16
+  - ADX
+  explained_variance_ratio:
+  - 0.45968036568726806
+  - 0.1826465527755192
+  - 0.09095870358470454
+  train_quantiles:
+    PC1:
+      '0.05': -3.325
+      '0.1': -2.5809
+      '0.25': -1.4328
+      '0.5': -0.1243
+      '0.75': 1.2939
+      '0.9': 2.6894
+      '0.95': 3.6991
+    PC2:
+      '0.05': -1.6196
+      '0.1': -1.4022
+      '0.25': -0.9514
+      '0.5': -0.3073
+      '0.75': 0.5895
+      '0.9': 1.7522
+      '0.95': 2.6514
+    PC3:
+      '0.05': -0.8851
+      '0.1': -0.7847
+      '0.25': -0.5882
+      '0.5': -0.2627
+      '0.75': 0.2559
+      '0.9': 1.0402
+      '0.95': 1.7522
+  loadings:
+    PC1:
+      RSI_norm: 0.4194
+      BB_percent_b: 0.3961
+      BB_width: 0.0776
+      Volume_ratio: 0.0163
+      ATR_percent: 0.0276
+      EMA20_distance: 0.4355
+      EMA50_distance: 0.3959
+      Return_1: 0.2167
+      Return_4: 0.3359
+      Return_16: 0.391
+      ADX: 0.0318
+    PC2:
+      RSI_norm: -0.0507
+      BB_percent_b: -0.0651
+      BB_width: 0.6403
+      Volume_ratio: 0.0041
+      ATR_percent: 0.5897
+      EMA20_distance: -0.0242
+      EMA50_distance: 0.005
+      Return_1: -0.0621
+      Return_4: -0.0587
+      Return_16: 0.0195
+      ADX: 0.4765
+    PC3:
+      RSI_norm: -0.0344
+      BB_percent_b: -0.0031
+      BB_width: 0.0037
+      Volume_ratio: 0.9896
+      ATR_percent: 0.0315
+      EMA20_distance: -0.0112
+      EMA50_distance: -0.0509
+      Return_1: 0.0907
+      Return_4: 0.0658
+      Return_16: -0.044
+      ADX: -0.0349
+performance:
+  validation_primary:
+    trades: 70.0
+    win_rate: 0.9142857142857143
+    roi: 0.7458719079581007
+    cagr: 1.574182733393684
+    max_drawdown: -0.17798160690692266
+    sharpe: 2.4969396519589417
+    profit_factor: 2.6007100688378983
+    avg_trade: 106.55312970830015
+    max_consecutive_losses: 2.0
+    avg_holding_hours: 5.210714285714285
+    liquidations: 0.0
+  test_oos_primary:
+    trades: 73.0
+    win_rate: 0.7671232876712328
+    roi: -0.5176699977212434
+    cagr: -0.7097929041311591
+    max_drawdown: -0.5633021658147555
+    sharpe: -2.5746239303952776
+    profit_factor: 0.5245506839321623
+    avg_trade: -70.91369831797857
+    max_consecutive_losses: 4.0
+    avg_holding_hours: 4.585616438356165
+    liquidations: 0.0
+  test_oos_median_roi: -0.08073712834514762
+  walk_forward:
+  - symbol: ZROUSDT
+    roi: -0.1662
+    max_drawdown: -0.262
+    profit_factor: 0.639
+    trades: 61
+  - symbol: BNBUSDT
+    roi: -0.0127
+    max_drawdown: -0.153
+    profit_factor: 0.9924
+    trades: 114
+  - symbol: ETHFIUSDT
+    roi: -0.3671
+    max_drawdown: -0.4549
+    profit_factor: 0.3253
+    trades: 52
+  - symbol: LTCUSDT
+    roi: 0.5373
+    max_drawdown: -0.1451
+    profit_factor: 3.1359
+    trades: 91
+  - symbol: ICPUSDT
+    roi: -0.0912
+    max_drawdown: -0.2696
+    profit_factor: 0.8696
+    trades: 81
+  - symbol: SOLUSDT
+    roi: -0.2081
+    max_drawdown: -0.2498
+    profit_factor: 0.6779
+    trades: 113
+  - symbol: TAOUSDT
+    roi: 0.0062
+    max_drawdown: -0.1889
+    profit_factor: 1.0473
+    trades: 64
+  - symbol: PENDLEUSDT
+    roi: -0.1334
+    max_drawdown: -0.3606
+    profit_factor: 0.7549
+    trades: 95
+  monte_carlo:
+  - mode: shuffle
+    extra_cost_per_trade: 0.0
+    sims: 2000
+    roi_mean: -0.4974
+    roi_median: -0.4974
+    roi_p05: -0.4974
+    roi_p95: -0.4974
+    prob_profit: 0.0
+    mdd_median: -0.6396
+    mdd_p95_worst: -0.7398
+    mdd_worst: -0.8216
+    prob_dd_gt_20pct: 1.0
+    prob_dd_gt_40pct: 1.0
+    prob_ruin_50pct_loss: 0.0
+  - mode: shuffle
+    extra_cost_per_trade: 0.0005
+    sims: 2000
+    roi_mean: -0.6408
+    roi_median: -0.6408
+    roi_p05: -0.6408
+    roi_p95: -0.6408
+    prob_profit: 0.0
+    mdd_median: -0.7164
+    mdd_p95_worst: -0.7879
+    mdd_worst: -0.8593
+    prob_dd_gt_20pct: 1.0
+    prob_dd_gt_40pct: 1.0
+    prob_ruin_50pct_loss: 1.0
+  - mode: shuffle
+    extra_cost_per_trade: 0.001
+    sims: 2000
+    roi_mean: -0.7434
+    roi_median: -0.7434
+    roi_p05: -0.7434
+    roi_p95: -0.7434
+    prob_profit: 0.0
+    mdd_median: -0.7849
+    mdd_p95_worst: -0.8315
+    mdd_worst: -0.889
+    prob_dd_gt_20pct: 1.0
+    prob_dd_gt_40pct: 1.0
+    prob_ruin_50pct_loss: 1.0
+checks:
+  OOS 수익 (test split, 심볼 중앙값 > 0): false
+  OOS MDD <= 25%: false
+  OOS Profit Factor >= 1.2 (중앙값): false
+  거래 표본 >= 100 (전체 OOS): true
+  심볼 재현성 (과반 심볼 수익): false
+  Walk-forward 과반 fold 수익: false
+  청산 0건: true
+  비용 2배에서도 수익: false
+  MC 50% 손실 확률 < 5%: false
+  유니버스 과반 심볼 OOS 수익: false
+  유니버스 청산 심볼 0개: true
